@@ -1,4 +1,4 @@
-use crossbeam::channel::{bounded, Receiver};
+use async_channel::{bounded, Receiver};
 use std::{thread, time::Duration};
 
 pub struct Timer {
