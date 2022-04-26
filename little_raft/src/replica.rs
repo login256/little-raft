@@ -4,8 +4,7 @@ use crate::{
     state_machine::{StateMachine, StateMachineTransition, TransitionState},
     timer::Timer,
 };
-//use crossbeam_channel::{Receiver, Select};
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::select;
 use rand::Rng;
 use std::sync::{Arc, Mutex};
@@ -173,7 +172,7 @@ where
     /// whenever new transitions to be processed for the StateMachine are
     /// available. The Replica will not poll for pending transitions for the
     /// StateMachine unless notified through recv_transition.
-    pub async fn start(&mut self, mut recv_msg: Receiver<()>, mut recv_transition: Receiver<()>) {
+    pub async fn start(&mut self, mut recv_msg: UnboundedReceiver<()>, mut recv_transition: UnboundedReceiver<()>) {
         loop {
             if self.cluster.lock().unwrap().halt() {
                 return;
@@ -189,7 +188,7 @@ where
         }
     }
 
-    async fn poll_as_leader(&mut self, recv_msg: &mut Receiver<()>, recv_transition: &mut Receiver<()>) {
+    async fn poll_as_leader(&mut self, recv_msg: &mut UnboundedReceiver<()>, recv_transition: &mut UnboundedReceiver<()>) {
         /*
         let mut select = Select::new();
         let recv_heartbeat = self.heartbeat_timer.get_rx();
@@ -260,8 +259,8 @@ where
         });
     }
 
-    async fn poll_as_follower(&mut self, recv_msg: &mut Receiver<()>) {
-        let timer = Timer::new(self.next_election_deadline- Instant::now());
+    async fn poll_as_follower(&mut self, recv_msg: &mut UnboundedReceiver<()>) {
+        let mut timer = Timer::new(self.next_election_deadline- Instant::now());
         select! {
             _msg = recv_msg.recv() =>{
                 let messages = self.cluster.lock().unwrap().receive_messages();
@@ -302,8 +301,8 @@ where
             + rand::thread_rng().gen_range(self.election_timeout.0..=self.election_timeout.1);
     }
 
-    async fn poll_as_candidate(&mut self, recv_msg: &mut Receiver<()>) {
-        let timer = Timer::new(self.next_election_deadline- Instant::now());
+    async fn poll_as_candidate(&mut self, recv_msg: &mut UnboundedReceiver<()>) {
+        let mut timer = Timer::new(self.next_election_deadline- Instant::now());
         select! {
             _msg = recv_msg.recv() =>{
                 // Process pending messages.

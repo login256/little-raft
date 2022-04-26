@@ -1,4 +1,4 @@
-use async_channel::{bounded, Receiver};
+use tokio::sync::mpsc::{channel, Receiver};
 use std::{thread, time::Duration};
 
 pub struct Timer {
@@ -9,7 +9,7 @@ pub struct Timer {
 // Timer fires after the specified duration. The timer can be renewed.
 impl Timer {
     pub fn new(timeout: Duration) -> Timer {
-        let (tx, rx) = bounded(1);
+        let (tx, rx) = channel(1);
         thread::spawn(move || {
             thread::sleep(timeout);
             let _ = tx.send(());
@@ -22,7 +22,7 @@ impl Timer {
     }
 
     pub fn renew(&mut self) {
-        let (tx, rx) = bounded(1);
+        let (tx, rx) = channel(1);
         let timeout = self.timeout;
         thread::spawn(move || {
             thread::sleep(timeout);
@@ -32,7 +32,7 @@ impl Timer {
         self.rx = rx;
     }
 
-    pub fn get_rx(&self) -> &Receiver<()> {
-        &self.rx
+    pub fn get_rx(&mut self) -> &mut Receiver<()> {
+        &mut self.rx
     }
 }
