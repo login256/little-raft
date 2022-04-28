@@ -172,16 +172,16 @@ where
     /// whenever new transitions to be processed for the StateMachine are
     /// available. The Replica will not poll for pending transitions for the
     /// StateMachine unless notified through recv_transition.
-    pub async fn start(&mut self, mut recv_msg: UnboundedReceiver<()>, mut recv_transition: UnboundedReceiver<()>) {
+    pub async fn start(&mut self, recv_msg: & mut UnboundedReceiver<()>, recv_transition: & mut UnboundedReceiver<()>) {
         loop {
             if self.cluster.lock().unwrap().halt() {
                 return;
             }
 
             match self.state {
-                State::Leader => self.poll_as_leader(&mut recv_msg, &mut recv_transition).await,
-                State::Follower => self.poll_as_follower(&mut recv_msg).await,
-                State::Candidate => self.poll_as_candidate(&mut recv_msg).await,
+                State::Leader => self.poll_as_leader(recv_msg, recv_transition).await,
+                State::Follower => self.poll_as_follower(recv_msg).await,
+                State::Candidate => self.poll_as_candidate(recv_msg).await,
             }
 
             self.apply_ready_entries();
