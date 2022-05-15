@@ -1,7 +1,7 @@
 use crate::{
     cluster::Cluster,
     message::{LogEntry, Message},
-    state_machine::{StateMachine, StateMachineTransition, TransitionState},
+    state_machine::{StateMachine, StateMachineTransition, TransitionState, Storage},
     timer::Timer,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -28,7 +28,7 @@ pub type ReplicaID = usize;
 /// to maintain the consistency of the user-defined StateMachine across the
 /// cluster. It uses the user-defined Cluster implementation to talk to other
 /// Replicas, be it over the network or pigeon post.
-pub struct Replica<S, T, C>
+pub struct Replica<S, T, C, ST>
 where
     T: StateMachineTransition,
     S: StateMachine<T>,
@@ -90,13 +90,17 @@ where
     /// If no heartbeat message is received by the deadline, the Replica will
     /// start an election.
     next_election_deadline: Instant,
+
+    // Storage trait, for store data
+    storage: Arc<Mutex<ST>>,
 }
 
-impl<S, T, C> Replica<S, T, C>
+impl<S, T, C, ST> Replica<S, T, C, ST>
 where
     T: StateMachineTransition,
     S: StateMachine<T>,
     C: Cluster<T>,
+    ST: Storage<T>,
 {
     /// Create a new Replica.
     ///
@@ -132,16 +136,17 @@ where
         noop_transition: T,
         heartbeat_timeout: Duration,
         election_timeout_range: (Duration, Duration),
-    ) -> Replica<S, T, C> {
+        storage: Arc<Mutex<ST>>,
+    ) -> Replica<S, T, C, ST> {
         Replica {
             state_machine: state_machine,
             cluster: cluster,
             peer_ids: peer_ids,
             id: id,
-            current_term: 0,
+            current_term: storage.clone().lock().unwrap().get_term(),
             current_votes: None,
             state: State::Follower,
-            voted_for: None,
+            voted_for: storage.clone().lock().unwrap().get_vote(),
             log: vec![LogEntry {
                 term: 0,
                 index: 0,
@@ -155,6 +160,7 @@ where
             election_timeout: election_timeout_range,
             heartbeat_timer: Timer::new(heartbeat_timeout),
             next_election_deadline: Instant::now(),
+            storage: storage,
         }
     }
 
@@ -395,12 +401,13 @@ where
         let transitions = self.state_machine.lock().unwrap().get_pending_transitions();
         for transition in transitions {
             if self.state == State::Leader {
-                self.log.push(LogEntry {
+                let e =LogEntry {
                     index: self.log.len(),
                     transition: transition.clone(),
                     term: self.current_term,
-                });
-
+                }; 
+                self.log.push(e.clone());
+                self.storage.lock().unwrap().push_entry(e);
                 let mut state_machine = self.state_machine.lock().unwrap();
                 state_machine
                     .register_transition_state(transition.get_id(), TransitionState::Queued);
@@ -492,6 +499,7 @@ where
                     },
                 );
                 self.voted_for = Some(from_id);
+                self.storage.lock().unwrap().store_vote(Some(from_id));
             } else {
                 // If the criteria are not met, do not grant the vote.
                 self.cluster.lock().unwrap().send_message(
@@ -554,16 +562,18 @@ where
             );
             return;
         }
-
+        let mut st = self.storage.lock().unwrap();
         for entry in entries {
             // Drop local inconsistent logs.
             if entry.index < self.log.len() && entry.term != self.log[entry.index].term {
                 self.log.truncate(entry.index);
+                st.truncate_entries(entry.index);
             }
 
             // Push received logs.
             if entry.index == self.log.len() {
-                self.log.push(entry);
+                self.log.push(entry.clone());
+                st.push_entry(entry);
             }
         }
 
@@ -710,6 +720,7 @@ where
         self.state = State::Leader;
         self.current_votes = None;
         self.voted_for = None;
+        self.storage.lock().unwrap().store_vote(None);
         self.next_index = BTreeMap::new();
         self.match_index = BTreeMap::new();
         for peer_id in &self.peer_ids {
@@ -723,23 +734,28 @@ where
         // Leader's term. To carry out this operation as soon as the new Leader
         // emerges, append a no-op entry. This is a neat optimization described
         // in the part 8 of the paper.
-        self.log.push(LogEntry {
+        let e = LogEntry {
             index: self.log.len(),
             transition: self.noop_transition.clone(),
             term: self.current_term,
-        });
+        };
+        self.log.push(e.clone());
+        self.storage.lock().unwrap().push_entry(e);
     }
 
     fn become_follower(&mut self, term: usize) {
         self.current_term = term;
+        self.storage.lock().unwrap().store_term(term);
         self.state = State::Follower;
         self.current_votes = None;
         self.voted_for = None;
+        self.storage.lock().unwrap().store_vote(None);
     }
 
     fn become_candidate(&mut self) {
         // Increase current term.
         self.current_term += 1;
+        self.storage.lock().unwrap().store_term(self.current_term);
         // Claim yourself a candidate.
         self.state = State::Candidate;
         // Initialize votes. Vote for yourself.
@@ -747,6 +763,7 @@ where
         votes.insert(self.id);
         self.current_votes = Some(Box::new(votes));
         self.voted_for = Some(self.id);
+        self.storage.lock().unwrap().store_vote(Some(self.id));
         // Fan out vote requests.
         self.broadcast_message(|_: usize| Message::VoteRequest {
             from_id: self.id,

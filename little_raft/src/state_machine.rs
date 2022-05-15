@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 
+use crate::message::LogEntry;
+
 /// TransitionState describes the state of a particular transition.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TransitionState {
@@ -27,6 +29,22 @@ pub trait StateMachineTransition: Clone + Debug {
     /// get_id is used by the Replica to identify the transition to be able to
     /// call register_transition_state.
     fn get_id(&self) -> Self::TransitionID;
+}
+
+pub trait Storage <T>
+where
+    T: StateMachineTransition
+{
+    fn push_entry(&mut self, entry: LogEntry<T>);
+    fn truncate_entries(&mut self, index: usize);
+    fn store_term(&mut self, term: usize);
+    fn store_vote(&mut self, vote: Option<usize>);
+    fn get_term(&self) -> usize;
+    fn get_vote(&self) -> Option<usize>;
+    fn entries(&self, low: u64, high: u64) -> Vec<LogEntry<T>>;
+    fn last_index(&self) -> usize;
+    fn first_index(&self) -> usize;
+    //fn snapshot()
 }
 
 /// StateMachine describes a user-defined state machine that is replicated
