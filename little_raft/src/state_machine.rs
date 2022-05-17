@@ -1,3 +1,4 @@
+use crate::message::LogEntry;
 use std::fmt::Debug;
 
 /// TransitionState describes the state of a particular transition.
@@ -53,4 +54,20 @@ where
     /// discard them. get_pending_transitions must not return the same
     /// transition twice.
     fn get_pending_transitions(&mut self) -> Vec<T>;
+}
+
+pub trait Storage<T>
+where
+    T: StateMachineTransition,
+{
+    fn push_entry(&mut self, entry: LogEntry<T>);
+    fn truncate_entries(&mut self, index: usize);
+    fn store_term(&mut self, term: usize);
+    fn store_vote(&mut self, vote: Option<usize>);
+    fn get_term(&self) -> usize;
+    fn get_vote(&self) -> Option<usize>;
+    fn entries(&self, low: u64, high: u64) -> Vec<LogEntry<T>>;
+    fn last_index(&self) -> usize;
+    fn first_index(&self) -> usize;
+    //fn snapshot()
 }
