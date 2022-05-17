@@ -32,6 +32,7 @@ where
     T: StateMachineTransition,
     S: StateMachine<T>,
     C: Cluster<T>,
+    ST: Storage<T>,
 {
     /// ID of this Replica.
     id: ReplicaID,
