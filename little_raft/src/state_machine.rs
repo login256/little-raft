@@ -60,8 +60,8 @@ where
 #[derive(Serialize, Deserialize, Debug)]
 pub struct HardState
 {
-    cur_term: usize,
-    cur_vote: Option<usize>,
+    pub cur_term: usize,
+    pub cur_vote: Option<usize>,
 }
 
 pub trait Storage<T>
