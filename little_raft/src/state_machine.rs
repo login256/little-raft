@@ -1,5 +1,6 @@
 use crate::message::LogEntry;
 use std::fmt::Debug;
+use serde::{Serialize, Deserialize};
 
 /// TransitionState describes the state of a particular transition.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +55,13 @@ where
     /// discard them. get_pending_transitions must not return the same
     /// transition twice.
     fn get_pending_transitions(&mut self) -> Vec<T>;
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct HardState
+{
+    cur_term: usize,
+    cur_vote: Option<usize>,
 }
 
 pub trait Storage<T>
