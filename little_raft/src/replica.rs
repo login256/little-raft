@@ -138,15 +138,17 @@ where
         election_timeout_range: (Duration, Duration),
         storage: Arc<Mutex<ST>>,
     ) -> Replica<S, T, C, ST> {
+        let current_term = storage.clone().lock().unwrap().get_term();
+        let voted_for = storage.clone().lock().unwrap().get_vote();
         Replica {
             state_machine: state_machine,
             cluster: cluster,
             peer_ids: peer_ids,
             id: id,
-            current_term: storage.clone().lock().unwrap().get_term(),
+            current_term: current_term,
             current_votes: None,
             state: State::Follower,
-            voted_for: storage.clone().lock().unwrap().get_vote(),
+            voted_for: voted_for,
             log: vec![LogEntry {
                 term: 0,
                 index: 0,
