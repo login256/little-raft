@@ -141,7 +141,7 @@ where
         let current_term = storage.clone().lock().unwrap().get_term();
         let voted_for = storage.clone().lock().unwrap().get_vote();
         let last_index = storage.clone().lock().unwrap().last_index();
-        let log = if last_index == 0 {
+        let log = if last_index != 0 {
             storage.clone().lock().unwrap().entries(0, last_index)
         }else{
             let v = LogEntry {
