@@ -140,6 +140,18 @@ where
     ) -> Replica<S, T, C, ST> {
         let current_term = storage.clone().lock().unwrap().get_term();
         let voted_for = storage.clone().lock().unwrap().get_vote();
+        let last_index = storage.clone().lock().unwrap().last_index();
+        let log = if last_index == 0 {
+            storage.clone().lock().unwrap().entries(0, last_index)
+        }else{
+            let v = LogEntry {
+                term: 0,
+                index: 0,
+                transition: noop_transition.clone(),
+            };
+            storage.clone().lock().unwrap().push_entry(v.clone());
+            vec![v]
+        };
         Replica {
             state_machine: state_machine,
             cluster: cluster,
@@ -149,11 +161,7 @@ where
             current_votes: None,
             state: State::Follower,
             voted_for: voted_for,
-            log: vec![LogEntry {
-                term: 0,
-                index: 0,
-                transition: noop_transition.clone(),
-            }],
+            log: log,
             noop_transition: noop_transition.clone(),
             commit_index: 0,
             last_applied: 0,
