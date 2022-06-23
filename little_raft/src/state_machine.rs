@@ -74,7 +74,7 @@ where
     fn store_vote(&mut self, vote: Option<usize>);
     fn get_term(&self) -> usize;
     fn get_vote(&self) -> Option<usize>;
-    fn entries(&self, low: usize, high: usize) -> Vec<LogEntry<T>>;
+    fn entries(&mut self, low: usize, high: usize) -> Vec<LogEntry<T>>;
     fn last_index(&self) -> usize;
     fn first_index(&self) -> usize;
     //fn snapshot()
