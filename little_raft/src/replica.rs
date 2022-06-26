@@ -4,7 +4,8 @@ use crate::{
     state_machine::{StateMachine, StateMachineTransition, Storage, TransitionState},
     timer::Timer,
 };
-use crossbeam_channel::{Receiver, Select};
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::select;
 use rand::Rng;
 use std::sync::{Arc, Mutex};
 use std::{
@@ -188,58 +189,40 @@ where
     /// whenever new transitions to be processed for the StateMachine are
     /// available. The Replica will not poll for pending transitions for the
     /// StateMachine unless notified through recv_transition.
-    pub fn start(&mut self, recv_msg: Receiver<()>, recv_transition: Receiver<()>) {
+    pub async fn start(&mut self, recv_msg: &mut UnboundedReceiver<()>, recv_transition: &mut UnboundedReceiver<()>) {
         loop {
             if self.cluster.lock().unwrap().halt() {
                 return;
             }
 
             match self.state {
-                State::Leader => self.poll_as_leader(&recv_msg, &recv_transition),
-                State::Follower => self.poll_as_follower(&recv_msg),
-                State::Candidate => self.poll_as_candidate(&recv_msg),
+                State::Leader => self.poll_as_leader(recv_msg, recv_transition).await,
+                State::Follower => self.poll_as_follower(recv_msg).await,
+                State::Candidate => self.poll_as_candidate(recv_msg).await,
             }
 
             self.apply_ready_entries();
         }
     }
 
-    fn poll_as_leader(&mut self, recv_msg: &Receiver<()>, recv_transition: &Receiver<()>) {
-        let mut select = Select::new();
+    async fn poll_as_leader(&mut self, recv_msg: &mut UnboundedReceiver<()>, recv_transition: &mut UnboundedReceiver<()>) {
         let recv_heartbeat = self.heartbeat_timer.get_rx();
-        let (msg, transition, heartbeat) = (
-            select.recv(recv_msg),
-            select.recv(recv_transition),
-            select.recv(recv_heartbeat),
-        );
-
-        let oper = select.select();
-        match oper.index() {
-            // Process pending messages.
-            i if i == msg => {
-                oper.recv(recv_msg)
-                    .expect("could not react to a new message");
+        select! {
+            _msg = recv_msg.recv() => {
                 let messages = self.cluster.lock().unwrap().receive_messages();
                 for message in messages {
                     self.process_message(message);
                 }
             }
-            // Process pending transitions.
-            i if i == transition => {
-                oper.recv(recv_transition)
-                    .expect("could not react to a new transition");
+            _tst = recv_transition.recv() => {
                 self.load_new_transitions();
                 self.broadcast_append_entry_request();
             }
-            // Broadcast heartbeat messages.
-            i if i == heartbeat => {
-                oper.recv(recv_heartbeat)
-                    .expect("could not react to the heartbeat");
+            _hbt = recv_heartbeat.recv() => {
                 self.broadcast_append_entry_request();
                 self.heartbeat_timer.renew();
             }
-            _ => unreachable!(),
-        }
+        };
     }
 
     fn broadcast_append_entry_request(&mut self) {
@@ -253,10 +236,10 @@ where
         });
     }
 
-    fn poll_as_follower(&mut self, recv_msg: &Receiver<()>) {
-        match recv_msg.recv_deadline(self.next_election_deadline) {
-            // Process pending messages.
-            Ok(_) => {
+    async fn poll_as_follower(&mut self, recv_msg: &mut UnboundedReceiver<()>) {
+        let mut timer = Timer::new(self.next_election_deadline - Instant::now());
+        select! {
+            _msg = recv_msg.recv() =>{
                 let messages = self.cluster.lock().unwrap().receive_messages();
                 // Update the election deadline if more than zero messages were
                 // actually received.
@@ -269,7 +252,7 @@ where
                 }
             }
             // Become candidate and update elction deadline.
-            _ => {
+            _tm = timer.get_rx().recv() => {
                 self.become_candidate();
                 self.update_election_deadline();
             }
@@ -295,9 +278,10 @@ where
             + rand::thread_rng().gen_range(self.election_timeout.0..=self.election_timeout.1);
     }
 
-    fn poll_as_candidate(&mut self, recv_msg: &Receiver<()>) {
-        match recv_msg.recv_deadline(self.next_election_deadline) {
-            Ok(_) => {
+    async fn poll_as_candidate(&mut self, recv_msg: &mut UnboundedReceiver<()>) {
+        let mut timer = Timer::new(self.next_election_deadline - Instant::now());
+        select! {
+            _msg = recv_msg.recv() =>{
                 // Process pending messages.
                 let messages = self.cluster.lock().unwrap().receive_messages();
                 // Update the election deadline if more than zero messages were
@@ -310,7 +294,7 @@ where
                 }
             }
             // Become candidate and update elction deadline.
-            _ => {
+            _tm = timer.get_rx().recv() => {
                 self.become_candidate();
                 self.update_election_deadline();
             }
