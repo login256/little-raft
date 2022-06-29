@@ -1,6 +1,7 @@
 use crate::message::LogEntry;
 use std::fmt::Debug;
 use serde::{Serialize, Deserialize};
+use async_trait::async_trait;
 
 /// TransitionState describes the state of a particular transition.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,6 +35,7 @@ pub trait StateMachineTransition: Clone + Debug {
 /// StateMachine describes a user-defined state machine that is replicated
 /// across the cluster. Raft can Replica whatever distributed state machine can
 /// implement this trait.
+#[async_trait]
 pub trait StateMachine<T>
 where
     T: StateMachineTransition,
@@ -41,12 +43,12 @@ where
     /// This is a hook that the local Replica will call each time the state of a
     /// particular transition changes. It is up to the user what to do with that
     /// information.
-    fn register_transition_state(&mut self, transition_id: T::TransitionID, state: TransitionState);
+    async fn register_transition_state(&mut self, transition_id: T::TransitionID, state: TransitionState);
 
     /// When a particular transition is ready to be applied, the Replica will
     /// call apply_transition to apply said transition to the local state
     /// machine.
-    fn apply_transition(&mut self, transition: T);
+    async fn apply_transition(&mut self, transition: T);
 
     /// This function is used to receive transitions from the user that need to
     /// be applied to the replicated state machine. Note that only the Leader
@@ -54,7 +56,7 @@ where
     /// recv_transition channel. All other Replicas poll for transitions and
     /// discard them. get_pending_transitions must not return the same
     /// transition twice.
-    fn get_pending_transitions(&mut self) -> Vec<T>;
+    async fn get_pending_transitions(&mut self) -> Vec<T>;
 }
 
 #[derive(Serialize, Deserialize, Debug)]
