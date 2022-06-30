@@ -4,18 +4,18 @@ use crate::{
     state_machine::{StateMachine, StateMachineTransition, Storage, TransitionState},
     timer::Timer,
 };
+use log::{debug, info};
+use log_derive::{logfn, logfn_inputs};
 use madsim::collections::{BTreeMap, BTreeSet};
 use madsim::rand::Rng;
-use std::{sync::Arc, fmt::Debug};
 use std::{
     cmp,
     time::{Duration, Instant},
 };
+use std::{fmt::Debug, sync::Arc};
 use tokio::select;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
-use log::{info, debug};
-use log_derive::{logfn, logfn_inputs};
 
 #[derive(Clone, PartialEq, Debug)]
 enum State {

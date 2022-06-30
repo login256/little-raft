@@ -1,7 +1,7 @@
 use log::info;
-use tokio::sync::mpsc::{channel, Receiver};
-use std::{time::Duration};
 use log_derive::logfn;
+use std::time::Duration;
+use tokio::sync::mpsc::{channel, Receiver};
 
 #[derive(Debug)]
 pub struct Timer {

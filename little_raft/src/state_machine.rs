@@ -1,7 +1,7 @@
 use crate::message::LogEntry;
-use std::fmt::Debug;
-use serde::{Serialize, Deserialize};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 /// TransitionState describes the state of a particular transition.
 #[derive(Clone, Debug, PartialEq)]
@@ -43,7 +43,11 @@ where
     /// This is a hook that the local Replica will call each time the state of a
     /// particular transition changes. It is up to the user what to do with that
     /// information.
-    async fn register_transition_state(&mut self, transition_id: T::TransitionID, state: TransitionState);
+    async fn register_transition_state(
+        &mut self,
+        transition_id: T::TransitionID,
+        state: TransitionState,
+    );
 
     /// When a particular transition is ready to be applied, the Replica will
     /// call apply_transition to apply said transition to the local state
@@ -60,8 +64,7 @@ where
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct HardState
-{
+pub struct HardState {
     pub cur_term: usize,
     pub cur_vote: Option<usize>,
 }
