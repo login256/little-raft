@@ -1,6 +1,9 @@
+use log::info;
 use tokio::sync::mpsc::{channel, Receiver};
-use std::{thread, time::Duration};
+use std::{time::Duration};
+use log_derive::logfn;
 
+#[derive(Debug)]
 pub struct Timer {
     rx: Receiver<()>,
     timeout: Duration,
@@ -10,8 +13,9 @@ pub struct Timer {
 impl Timer {
     pub fn new(timeout: Duration) -> Timer {
         let (tx, rx) = channel(1);
-        thread::spawn(move || {
-            thread::sleep(timeout);
+        tokio::task::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            info!("timeout in {:?}ms!", timeout);
             let _ = tx.send(());
         });
 
@@ -24,8 +28,9 @@ impl Timer {
     pub fn renew(&mut self) {
         let (tx, rx) = channel(1);
         let timeout = self.timeout;
-        thread::spawn(move || {
-            thread::sleep(timeout);
+        tokio::task::spawn(async move {
+            tokio::time::sleep(timeout).await;
+            info!("timeout in {:?}ms!", timeout);
             let _ = tx.send(());
         });
 

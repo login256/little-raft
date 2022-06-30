@@ -4,16 +4,18 @@ use crate::{
     state_machine::{StateMachine, StateMachineTransition, Storage, TransitionState},
     timer::Timer,
 };
-use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::select;
-use madsim::rand::Rng;
 use madsim::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc};
-use tokio::sync::Mutex;
+use madsim::rand::Rng;
+use std::{sync::Arc, fmt::Debug};
 use std::{
     cmp,
     time::{Duration, Instant},
 };
+use tokio::select;
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::Mutex;
+use log::{info, debug};
+use log_derive::{logfn, logfn_inputs};
 
 #[derive(Clone, PartialEq, Debug)]
 enum State {
@@ -29,12 +31,13 @@ pub type ReplicaID = usize;
 /// to maintain the consistency of the user-defined StateMachine across the
 /// cluster. It uses the user-defined Cluster implementation to talk to other
 /// Replicas, be it over the network or pigeon post.
+#[derive(Debug)]
 pub struct Replica<S, T, C, ST>
 where
-    T: StateMachineTransition,
-    S: StateMachine<T>,
-    C: Cluster<T>,
-    ST: Storage<T>,
+    T: StateMachineTransition + Debug,
+    S: StateMachine<T> + Debug,
+    C: Cluster<T> + Debug,
+    ST: Storage<T> + Debug,
 {
     /// ID of this Replica.
     id: ReplicaID,
@@ -99,10 +102,10 @@ where
 
 impl<S, T, C, ST> Replica<S, T, C, ST>
 where
-    T: StateMachineTransition,
-    S: StateMachine<T>,
-    C: Cluster<T>,
-    ST: Storage<T>,
+    T: StateMachineTransition + Debug,
+    S: StateMachine<T> + Debug,
+    C: Cluster<T> + Debug,
+    ST: Storage<T> + Debug,
 {
     /// Create a new Replica.
     ///
@@ -145,7 +148,7 @@ where
         let last_index = storage.clone().lock().await.last_index();
         let log = if last_index != 0 {
             storage.clone().lock().await.entries(0, last_index)
-        }else{
+        } else {
             let v = LogEntry {
                 term: 0,
                 index: 0,
@@ -190,12 +193,17 @@ where
     /// whenever new transitions to be processed for the StateMachine are
     /// available. The Replica will not poll for pending transitions for the
     /// StateMachine unless notified through recv_transition.
-    pub async fn start(&mut self, recv_msg: &mut UnboundedReceiver<()>, recv_transition: &mut UnboundedReceiver<()>) {
+    #[logfn_inputs(Trace)]
+    pub async fn start(
+        &mut self,
+        recv_msg: &mut UnboundedReceiver<()>,
+        recv_transition: &mut UnboundedReceiver<()>,
+    ) {
         loop {
             if self.cluster.lock().await.halt() {
                 return;
             }
-
+            info!("Polling as {:?}", self.state);
             match self.state {
                 State::Leader => self.poll_as_leader(recv_msg, recv_transition).await,
                 State::Follower => self.poll_as_follower(recv_msg).await,
@@ -206,7 +214,12 @@ where
         }
     }
 
-    async fn poll_as_leader(&mut self, recv_msg: &mut UnboundedReceiver<()>, recv_transition: &mut UnboundedReceiver<()>) {
+    #[logfn_inputs(Trace)]
+    async fn poll_as_leader(
+        &mut self,
+        recv_msg: &mut UnboundedReceiver<()>,
+        recv_transition: &mut UnboundedReceiver<()>,
+    ) {
         let recv_heartbeat = self.heartbeat_timer.get_rx();
         select! {
             _msg = recv_msg.recv() => {
@@ -234,11 +247,20 @@ where
             prev_log_term: self.log[self.next_index[&peer_id] - 1].term,
             entries: self.get_entries_for_peer(peer_id),
             commit_index: self.commit_index,
-        }).await;
+        })
+        .await;
     }
 
+    #[logfn_inputs(Trace)]
     async fn poll_as_follower(&mut self, recv_msg: &mut UnboundedReceiver<()>) {
-        let mut timer = Timer::new(self.next_election_deadline - Instant::now());
+        let now = Instant::now();
+        let time_to_die = if self.next_election_deadline <= now {
+            Duration::ZERO
+        } else {
+            self.next_election_deadline - now
+        };
+        debug!("follower wait message with time out {:?}", time_to_die);
+        let mut timer = Timer::new(time_to_die);
         select! {
             _msg = recv_msg.recv() =>{
                 let messages = self.cluster.lock().await.receive_messages();
@@ -279,11 +301,19 @@ where
             + rand::thread_rng().gen_range(self.election_timeout.0..=self.election_timeout.1);
     }
 
+    #[logfn(Trace)]
     async fn poll_as_candidate(&mut self, recv_msg: &mut UnboundedReceiver<()>) {
-        let mut timer = Timer::new(self.next_election_deadline - Instant::now());
+        let now = Instant::now();
+        let time_to_die = if self.next_election_deadline <= now {
+            Duration::ZERO
+        } else {
+            self.next_election_deadline - now
+        };
+        debug!("cadidate wait message with time out {:?}", time_to_die);
+        let mut timer = Timer::new(time_to_die);
         select! {
             _msg = recv_msg.recv() =>{
-                // Process pending messages.
+                // Process pending messages.·
                 let messages = self.cluster.lock().await.receive_messages();
                 // Update the election deadline if more than zero messages were
                 // actually received.
@@ -349,10 +379,12 @@ where
 
             for i in old_commit_index + 1..=self.commit_index {
                 let mut state_machine = self.state_machine.lock().await;
-                state_machine.register_transition_state(
-                    self.log[i].transition.get_id(),
-                    TransitionState::Committed,
-                ).await;
+                state_machine
+                    .register_transition_state(
+                        self.log[i].transition.get_id(),
+                        TransitionState::Committed,
+                    )
+                    .await;
             }
         }
 
@@ -360,18 +392,27 @@ where
         while self.commit_index > self.last_applied {
             self.last_applied += 1;
             let mut state_machine = self.state_machine.lock().await;
-            state_machine.apply_transition(self.log[self.last_applied].transition.clone()).await;
-            state_machine.register_transition_state(
-                self.log[self.last_applied].transition.get_id(),
-                TransitionState::Applied,
-            ).await;
+            state_machine
+                .apply_transition(self.log[self.last_applied].transition.clone())
+                .await;
+            state_machine
+                .register_transition_state(
+                    self.log[self.last_applied].transition.get_id(),
+                    TransitionState::Applied,
+                )
+                .await;
         }
     }
 
     async fn load_new_transitions(&mut self) {
         // Load new transitions. Ignore the transitions if the replica is not
         // the Leader.
-        let transitions = self.state_machine.lock().await.get_pending_transitions().await;
+        let transitions = self
+            .state_machine
+            .lock()
+            .await
+            .get_pending_transitions()
+            .await;
         for transition in transitions {
             if self.state == State::Leader {
                 let e = LogEntry {
@@ -384,7 +425,8 @@ where
 
                 let mut state_machine = self.state_machine.lock().await;
                 state_machine
-                    .register_transition_state(transition.get_id(), TransitionState::Queued).await;
+                    .register_transition_state(transition.get_id(), TransitionState::Queued)
+                    .await;
             }
         }
     }
@@ -581,7 +623,8 @@ where
                 last_log_index,
                 last_log_term,
             } => {
-                self.process_vote_request_as_follower(from_id, term, last_log_index, last_log_term).await
+                self.process_vote_request_as_follower(from_id, term, last_log_index, last_log_term)
+                    .await
             }
             Message::AppendEntryRequest {
                 term,
@@ -590,14 +633,17 @@ where
                 prev_log_term,
                 entries,
                 commit_index,
-            } => self.process_append_entry_request_as_follower(
-                from_id,
-                term,
-                prev_log_index,
-                prev_log_term,
-                entries,
-                commit_index,
-            ).await,
+            } => {
+                self.process_append_entry_request_as_follower(
+                    from_id,
+                    term,
+                    prev_log_index,
+                    prev_log_term,
+                    entries,
+                    commit_index,
+                )
+                .await
+            }
             Message::AppendEntryResponse { .. } => { /* ignore */ }
             Message::VoteResponse { .. } => { /* ignore */ }
         }
@@ -606,16 +652,21 @@ where
     async fn process_message_as_candidate(&mut self, message: Message<T>) {
         match message {
             Message::AppendEntryRequest { term, from_id, .. } => {
-                self.process_append_entry_request_as_candidate(term, from_id, message).await
+                self.process_append_entry_request_as_candidate(term, from_id, message)
+                    .await
             }
             Message::VoteRequest { term, from_id, .. } => {
-                self.process_vote_request_as_candidate(term, from_id, message).await
+                self.process_vote_request_as_candidate(term, from_id, message)
+                    .await
             }
             Message::VoteResponse {
                 from_id,
                 term,
                 vote_granted,
-            } => self.process_vote_response_as_candidate(from_id, term, vote_granted).await,
+            } => {
+                self.process_vote_response_as_candidate(from_id, term, vote_granted)
+                    .await
+            }
             Message::AppendEntryResponse { .. } => { /* ignore */ }
         }
     }
@@ -689,6 +740,7 @@ where
         }
     }
 
+    #[logfn_inputs(Trace)]
     async fn become_leader(&mut self) {
         self.cluster.lock().await.register_leader(Some(self.id));
         self.state = State::Leader;
@@ -718,6 +770,7 @@ where
     }
 
     //Todo: term and vote for modified same time;
+    #[logfn_inputs(Trace)]
     async fn become_follower(&mut self, term: usize) {
         self.current_term = term;
         self.storage.lock().await.store_term(term);
@@ -726,7 +779,7 @@ where
         self.voted_for = None;
         self.storage.lock().await.store_vote(None);
     }
-
+    #[logfn_inputs(Trace)]
     async fn become_candidate(&mut self) {
         // Increase current term.
         self.current_term += 1;
@@ -745,7 +798,8 @@ where
             term: self.current_term,
             last_log_index: self.log.len() - 1,
             last_log_term: self.log[self.log.len() - 1].term,
-        }).await;
+        })
+        .await;
 
         if self.peer_ids.len() == 0 {
             self.become_leader().await;
