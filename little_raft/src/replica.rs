@@ -203,7 +203,7 @@ where
             if self.cluster.lock().await.halt() {
                 return;
             }
-            info!("Polling as {:?}", self.state);
+            debug!("Polling as {:?}", self.state);
             match self.state {
                 State::Leader => self.poll_as_leader(recv_msg, recv_transition).await,
                 State::Follower => self.poll_as_follower(recv_msg).await,

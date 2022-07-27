@@ -1,4 +1,4 @@
-use log::info;
+use log::{debug};
 use log_derive::logfn;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver};
@@ -15,7 +15,7 @@ impl Timer {
         let (tx, rx) = channel(1);
         tokio::task::spawn(async move {
             tokio::time::sleep(timeout).await;
-            info!("timeout in {:?}ms!", timeout);
+            debug!("timeout in {:?}ms!", timeout);
             let _ = tx.send(());
         });
 
@@ -30,7 +30,7 @@ impl Timer {
         let timeout = self.timeout;
         tokio::task::spawn(async move {
             tokio::time::sleep(timeout).await;
-            info!("timeout in {:?}ms!", timeout);
+            debug!("timeout in {:?}ms!", timeout);
             let _ = tx.send(());
         });
 
