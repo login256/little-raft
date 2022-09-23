@@ -5,7 +5,7 @@ The lightest distributed consensus library. Run your own replicated state machin
 Simply import the crate. In your `Cargo.toml`, add
 ```
 [dependencies]
-little_raft = "0.1"
+little_raft = "0.2.0"
 ```
 
 ## Using
@@ -111,10 +111,6 @@ where
     ) -> Replica<S, T, C>;
 
     /// This function starts the Replica and blocks forever.
-    ///
-    /// recv_msg is a channel on which the user must notify the Replica whenever
-    /// new messages from the Cluster are available. The Replica will not poll
-    /// for messages from the Cluster unless notified through recv_msg.
     ///
     /// recv_msg is a channel on which the user must notify the Replica whenever
     /// new messages from the Cluster are available. The Replica will not poll

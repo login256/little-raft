@@ -20,8 +20,8 @@ impl Timer {
         });
 
         Timer {
-            timeout: timeout,
-            rx: rx,
+            timeout,
+            rx: Timer::get_timeout_channel(timeout),
         }
     }
 

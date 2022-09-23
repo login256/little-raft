@@ -1,11 +1,13 @@
+use bytes::Bytes;
 use crossbeam_channel as channel;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use little_raft::{
     cluster::Cluster,
     message::Message,
     replica::Replica,
-    state_machine::{StateMachine, StateMachineTransition, TransitionState},
+    state_machine::{Snapshot, StateMachine, StateMachineTransition, TransitionState},
 };
+use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 
 use std::{collections::BTreeMap, thread, time::Duration};
@@ -38,9 +40,10 @@ struct Calculator {
     pending_transitions: Vec<ArithmeticOperation>,
 }
 
-impl StateMachine<ArithmeticOperation> for Calculator {
+impl StateMachine<ArithmeticOperation, Bytes> for Calculator {
     fn apply_transition(&mut self, transition: ArithmeticOperation) {
         self.value += transition.delta;
+        println!("id {} my value is now {} after applying delta {}", self.id, self.value, transition.delta);
     }
 
     fn register_transition_state(
@@ -62,18 +65,38 @@ impl StateMachine<ArithmeticOperation> for Calculator {
         self.pending_transitions = Vec::new();
         cur
     }
+
+    fn get_snapshot(&mut self) -> Option<Snapshot<Bytes>> {
+        println!("checked for snapshot");
+        None
+    }
+
+    fn create_snapshot(&mut self, index: usize, term: usize) -> Snapshot<Bytes> {
+        println!("created snapshot");
+        Snapshot {
+            last_included_index: index,
+            last_included_term: term,
+            data: Bytes::from(self.value.to_be_bytes().to_vec()),
+        }
+    }
+
+    fn set_snapshot(&mut self, snapshot: Snapshot<Bytes>) {
+        let v: Vec<u8> = snapshot.data.into_iter().collect();
+        self.value = i32::from_be_bytes(v[..].try_into().expect("incorrect length"));
+        println!("my value is now {} after loading", self.value);
+    }
 }
 
 // Our test replicas will be running each in its own thread.
 struct ThreadCluster {
     id: usize,
     is_leader: bool,
-    transmitters: BTreeMap<usize, Sender<Message<ArithmeticOperation>>>,
-    pending_messages: Vec<Message<ArithmeticOperation>>,
+    transmitters: BTreeMap<usize, Sender<Message<ArithmeticOperation, Bytes>>>,
+    pending_messages: Vec<Message<ArithmeticOperation, Bytes>>,
     halt: bool,
 }
 
-impl Cluster<ArithmeticOperation> for ThreadCluster {
+impl Cluster<ArithmeticOperation, Bytes> for ThreadCluster {
     fn register_leader(&mut self, leader_id: Option<usize>) {
         if let Some(id) = leader_id {
             if id == self.id {
@@ -86,7 +109,7 @@ impl Cluster<ArithmeticOperation> for ThreadCluster {
         }
     }
 
-    fn send_message(&mut self, to_id: usize, message: Message<ArithmeticOperation>) {
+    fn send_message(&mut self, to_id: usize, message: Message<ArithmeticOperation, Bytes>) {
         if let Some(transmitter) = self.transmitters.get(&to_id) {
             transmitter.send(message).expect("could not send message");
         }
@@ -96,7 +119,7 @@ impl Cluster<ArithmeticOperation> for ThreadCluster {
         self.halt
     }
 
-    fn receive_messages(&mut self) -> Vec<Message<ArithmeticOperation>> {
+    fn receive_messages(&mut self) -> Vec<Message<ArithmeticOperation, Bytes>> {
         let cur = self.pending_messages.clone();
         self.pending_messages = Vec::new();
         cur
@@ -107,7 +130,7 @@ impl Cluster<ArithmeticOperation> for ThreadCluster {
 // communication between replicas (threads).
 fn create_clusters(
     n: usize,
-    transmitters: BTreeMap<usize, Sender<Message<ArithmeticOperation>>>,
+    transmitters: BTreeMap<usize, Sender<Message<ArithmeticOperation, Bytes>>>,
 ) -> Vec<Arc<Mutex<ThreadCluster>>> {
     let mut clusters = Vec::new();
     for i in 0..n {
@@ -129,12 +152,12 @@ fn create_clusters(
 fn create_communication_between_clusters(
     n: usize,
 ) -> (
-    BTreeMap<usize, Sender<Message<ArithmeticOperation>>>,
-    Vec<Receiver<Message<ArithmeticOperation>>>,
+    BTreeMap<usize, Sender<Message<ArithmeticOperation, Bytes>>>,
+    Vec<Receiver<Message<ArithmeticOperation, Bytes>>>,
 ) {
     let (mut transmitters, mut receivers) = (BTreeMap::new(), Vec::new());
     for i in 0..n {
-        let (tx, rx) = unbounded::<Message<ArithmeticOperation>>();
+        let (tx, rx) = unbounded::<Message<ArithmeticOperation, Bytes>>();
         transmitters.insert(i, tx);
         receivers.push(rx);
     }
@@ -205,7 +228,7 @@ fn create_notifiers(
 
 fn run_clusters_communication(
     mut clusters: Vec<Arc<Mutex<ThreadCluster>>>,
-    mut cluster_message_receivers: Vec<Receiver<Message<ArithmeticOperation>>>,
+    mut cluster_message_receivers: Vec<Receiver<Message<ArithmeticOperation, Bytes>>>,
     mut message_notifiers_tx: Vec<Sender<()>>,
 ) {
     for _ in (0..clusters.len()).rev() {
@@ -246,10 +269,7 @@ fn run_arithmetic_operation_on_cluster(
                 .lock()
                 .unwrap()
                 .pending_transitions
-                .push(ArithmeticOperation {
-                    delta: delta,
-                    id: id,
-                });
+                .push(ArithmeticOperation { delta, id });
             transition_notifiers[cluster.id]
                 .send(())
                 .expect("could not send transition notification");
@@ -266,7 +286,7 @@ fn halt_clusters(clusters: Vec<Arc<Mutex<ThreadCluster>>>) {
         let mut c = cluster.lock().unwrap();
         c.halt = true;
     }
-    thread::sleep(Duration::from_secs(2));
+    thread::sleep(Duration::from_secs(3));
 }
 
 #[test]
@@ -287,6 +307,7 @@ fn run_replicas() {
     let (applied_transitions_tx, applied_transitions_rx) = unbounded();
     let state_machines = create_state_machines(n, applied_transitions_tx);
     let (message_tx, transition_tx, message_rx, transition_rx) = create_notifiers(n);
+
     for i in 0..n {
         let noop = noop.clone();
         let local_peer_ids = peer_ids[i].clone();
@@ -294,12 +315,14 @@ fn run_replicas() {
         let state_machine = state_machines[i].clone();
         let m_rx = message_rx[i].clone();
         let t_rx = transition_rx[i].clone();
+
         thread::spawn(move || {
             let mut replica = Replica::new(
                 i,
                 local_peer_ids,
                 cluster,
                 state_machine,
+                1,
                 noop.clone(),
                 HEARTBEAT_TIMEOUT,
                 (MIN_ELECTION_TIMEOUT, MAX_ELECTION_TIMEOUT),
@@ -309,7 +332,7 @@ fn run_replicas() {
         });
     }
 
-    run_clusters_communication(clusters.clone(), receivers.clone(), message_tx);
+    run_clusters_communication(clusters.clone(), receivers, message_tx);
 
     run_arithmetic_operation_on_cluster(
         clusters.clone(),
@@ -335,15 +358,9 @@ fn run_replicas() {
         3,
     );
 
-    run_arithmetic_operation_on_cluster(
-        clusters.clone(),
-        state_machines.clone(),
-        transition_tx.clone(),
-        3,
-        4,
-    );
+    run_arithmetic_operation_on_cluster(clusters.clone(), state_machines.clone(), transition_tx.clone(), 3, 4);
 
-    halt_clusters(clusters.clone());
+    halt_clusters(clusters);
 
     // Below we confirm that every replica applied the same transitions in the
     // same order.
