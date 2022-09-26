@@ -51,8 +51,11 @@ pub trait StateMachineTransition: Clone + Debug {
 /// represent StateMachine state at a particular point. This will let the
 /// Replica start from a saved state or perform log compaction before the log
 /// sequence starts taking up too much memory.
-#[derive(Clone)]
-pub struct Snapshot<D> where D: Clone {
+#[derive(Clone, Debug)]
+pub struct Snapshot<D>
+where
+    D: Clone,
+{
     pub last_included_index: usize,
     pub last_included_term: usize,
     pub data: D,
@@ -87,7 +90,7 @@ where
     /// discard them. get_pending_transitions must not return the same
     /// transition twice.
     async fn get_pending_transitions(&mut self) -> Vec<T>;
-    
+
     //fn snapshot()
 
     /// Replica calls get_snapshot once upon startup. If the Replica and the
@@ -103,7 +106,7 @@ where
     /// snapshot.last_included_term are truthful. However, it is up to the user
     /// to put the StateMachine into the right state before returning from
     /// load_snapshot().
-    fn get_snapshot(&mut self) -> Option<Snapshot<D>>;
+    async fn get_snapshot(&mut self) -> Option<Snapshot<D>>;
 
     /// create_snapshot is periodically called by the Replica if log compaction
     /// is enabled by setting snapshot_delta > 0. The implementation MUST create
@@ -112,7 +115,7 @@ where
     /// If the Replica should use this snapshot as a checkpoint upon restart,
     /// the implementation MUST save the created snapshot object to permanent
     /// storage and return it with get_snapshot after restart.
-    fn create_snapshot(
+    async fn create_snapshot(
         &mut self,
         last_included_index: usize,
         last_included_term: usize,
@@ -122,7 +125,7 @@ where
     /// called. The StateMachine MUST then load its state from the provided
     /// snapshot and potentially save said snapshot to persistent storage, same
     /// way it is done in create_snapshot.
-    fn set_snapshot(&mut self, snapshot: Snapshot<D>);
+    async fn set_snapshot(&mut self, snapshot: Snapshot<D>);
 }
 
 #[derive(Serialize, Deserialize, Debug)]

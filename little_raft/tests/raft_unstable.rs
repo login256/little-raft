@@ -1,14 +1,14 @@
 use bytes::Bytes;
 use crossbeam_channel as channel;
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use rand::{thread_rng, Rng};
-use rand::seq::SliceRandom;
 use little_raft::{
     cluster::Cluster,
     message::Message,
     replica::Replica,
     state_machine::{Snapshot, StateMachine, StateMachineTransition, TransitionState},
 };
+use rand::seq::SliceRandom;
+use rand::{thread_rng, Rng};
 use std::convert::TryInto;
 use std::sync::{Arc, Mutex};
 
@@ -45,7 +45,10 @@ struct Calculator {
 impl StateMachine<ArithmeticOperation, Bytes> for Calculator {
     fn apply_transition(&mut self, transition: ArithmeticOperation) {
         self.value += transition.delta;
-        println!("id {} my value is now {} after applying delta {}", self.id, self.value, transition.delta);
+        println!(
+            "id {} my value is now {} after applying delta {}",
+            self.id, self.value, transition.delta
+        );
     }
 
     fn register_transition_state(
@@ -85,7 +88,10 @@ impl StateMachine<ArithmeticOperation, Bytes> for Calculator {
     fn set_snapshot(&mut self, snapshot: Snapshot<Bytes>) {
         let v: Vec<u8> = snapshot.data.into_iter().collect();
         self.value = i32::from_be_bytes(v[..].try_into().expect("incorrect length"));
-        println!("id {} my value is now {} after loading", self.id, self.value);
+        println!(
+            "id {} my value is now {} after loading",
+            self.id, self.value
+        );
     }
 }
 
@@ -115,7 +121,7 @@ impl Cluster<ArithmeticOperation, Bytes> for ThreadCluster {
         // Drop messages with probability 0.25.
         let n: u8 = rand::thread_rng().gen();
         if n % 4 == 0 {
-            return
+            return;
         }
 
         if let Some(transmitter) = self.transmitters.get(&to_id) {
@@ -382,12 +388,17 @@ fn run_replicas() {
         3,
     );
 
-
     for machine in state_machines.clone() {
         assert_eq!(machine.lock().unwrap().value, -557);
     }
 
-    run_arithmetic_operation_on_cluster(clusters.clone(), state_machines.clone(), transition_tx.clone(), 3, 4);
+    run_arithmetic_operation_on_cluster(
+        clusters.clone(),
+        state_machines.clone(),
+        transition_tx.clone(),
+        3,
+        4,
+    );
 
     for machine in state_machines.clone() {
         assert_eq!(machine.lock().unwrap().value, -554);

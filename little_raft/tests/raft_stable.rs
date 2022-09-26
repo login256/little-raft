@@ -43,7 +43,10 @@ struct Calculator {
 impl StateMachine<ArithmeticOperation, Bytes> for Calculator {
     fn apply_transition(&mut self, transition: ArithmeticOperation) {
         self.value += transition.delta;
-        println!("id {} my value is now {} after applying delta {}", self.id, self.value, transition.delta);
+        println!(
+            "id {} my value is now {} after applying delta {}",
+            self.id, self.value, transition.delta
+        );
     }
 
     fn register_transition_state(
@@ -358,7 +361,13 @@ fn run_replicas() {
         3,
     );
 
-    run_arithmetic_operation_on_cluster(clusters.clone(), state_machines.clone(), transition_tx.clone(), 3, 4);
+    run_arithmetic_operation_on_cluster(
+        clusters.clone(),
+        state_machines.clone(),
+        transition_tx.clone(),
+        3,
+        4,
+    );
 
     halt_clusters(clusters);
 

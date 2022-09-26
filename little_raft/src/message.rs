@@ -1,5 +1,5 @@
 use crate::replica::ReplicaID;
-use crate::state_machine::{StateMachineTransition};
+use crate::state_machine::StateMachineTransition;
 
 /// LogEntry is a state machine transition along with some metadata needed for
 /// Raft.

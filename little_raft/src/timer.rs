@@ -1,5 +1,4 @@
-use log::{debug};
-use log_derive::logfn;
+use log::debug;
 use std::time::Duration;
 use tokio::sync::mpsc::{channel, Receiver};
 
@@ -19,10 +18,7 @@ impl Timer {
             let _ = tx.send(());
         });
 
-        Timer {
-            timeout,
-            rx: Timer::get_timeout_channel(timeout),
-        }
+        Timer { timeout, rx: rx }
     }
 
     pub fn renew(&mut self) {

@@ -1,4 +1,4 @@
-use crate::{message::Message, replica::ReplicaID, state_machine::{StateMachineTransition}};
+use crate::{message::Message, replica::ReplicaID, state_machine::StateMachineTransition};
 
 /// Cluster is used for the local Raft Replica to communicate with the rest of
 /// the Raft cluster. It is up to the user how to abstract that communication.

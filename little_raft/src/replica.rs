@@ -1,10 +1,13 @@
 use crate::{
     cluster::Cluster,
     message::{LogEntry, Message},
-    state_machine::{StateMachine, StateMachineTransition, Storage, TransitionAbandonedReason, TransitionState},
+    state_machine::{
+        Snapshot, StateMachine, StateMachineTransition, Storage, TransitionAbandonedReason,
+        TransitionState,
+    },
     timer::Timer,
 };
-use log::{debug, info};
+use log::debug;
 use log_derive::{logfn, logfn_inputs};
 use madsim::collections::{BTreeMap, BTreeSet};
 use madsim::rand::Rng;
@@ -12,7 +15,7 @@ use std::{
     cmp,
     time::{Duration, Instant},
 };
-use std::{fmt::Debug, sync::Arc};
+use std::{cmp::Ordering, fmt::Debug, sync::Arc};
 use tokio::select;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
@@ -42,9 +45,9 @@ enum ReplicaError {
 pub struct Replica<S, T, C, ST, D>
 where
     T: StateMachineTransition + Debug,
-    S: StateMachine<T> + Debug,
+    S: StateMachine<T, D> + Debug,
     C: Cluster<T, D> + Debug,
-    ST: Storage<T, D> + Debug,
+    ST: Storage<T> + Debug,
     D: Clone + Debug,
 {
     /// ID of this Replica.
@@ -54,7 +57,7 @@ where
     peer_ids: Vec<ReplicaID>,
 
     /// User-defined state machine that the cluster Replicates.
-    state_machine: Arc<Mutex<M>>,
+    state_machine: Arc<Mutex<S>>,
 
     /// Interface a Replica uses to communicate with the rest of the cluster.
     cluster: Arc<Mutex<C>>,
@@ -163,18 +166,18 @@ where
     /// use-case network latency and responsiveness needs. An
     /// election_timeout_range / heartbeat_timeout ratio that's too low might
     /// cause unwarranted re-elections in the cluster.
-    pub fn new(
+    pub async fn new(
         id: ReplicaID,
         peer_ids: Vec<ReplicaID>,
         cluster: Arc<Mutex<C>>,
-        state_machine: Arc<Mutex<M>>,
+        state_machine: Arc<Mutex<S>>,
         snapshot_delta: usize,
         noop_transition: T,
         heartbeat_timeout: Duration,
         election_timeout_range: (Duration, Duration),
         storage: Arc<Mutex<ST>>,
     ) -> Replica<S, T, C, ST, D> {
-        let snapshot = state_machine.lock().unwrap().get_snapshot();
+        let snapshot = state_machine.lock().await.get_snapshot().await;
         // index_offset is the "length" of the snapshot, so calculate it as
         // snapshot.last_included_index + 1.
         let mut index_offset: usize = 0;
@@ -185,7 +188,11 @@ where
         let voted_for = storage.clone().lock().await.get_vote();
         let last_index = storage.clone().lock().await.last_index();
         let log = if last_index != 0 {
-            storage.clone().lock().await.entries(index_offset, last_index)
+            storage
+                .clone()
+                .lock()
+                .await
+                .entries(index_offset, last_index)
         } else {
             let v = LogEntry {
                 term: 0,
@@ -300,7 +307,8 @@ where
                     }
                 }
             }
-        }).await;
+        })
+        .await;
     }
 
     fn get_term_at_index(&self, index: usize) -> Result<usize> {
@@ -444,16 +452,18 @@ where
                 if num_replications * 2 >= self.peer_ids.len()
                     && self.log[n - self.index_offset].term == self.current_term
                 {
-                    self.commit_index = n;
+                    self.commit_index = n; //break;
                 }
                 n -= 1;
             }
 
             for i in old_commit_index + 1..=self.commit_index {
-                state_machine.register_transition_state(
-                    self.log[i - self.index_offset].transition.get_id(),
-                    TransitionState::Committed,
-                );
+                state_machine
+                    .register_transition_state(
+                        self.log[i - self.index_offset].transition.get_id(),
+                        TransitionState::Committed,
+                    )
+                    .await;
             }
         }
 
@@ -461,11 +471,15 @@ where
         while self.commit_index > self.last_applied {
             self.last_applied += 1;
             let local_idx = self.last_applied - self.index_offset;
-            state_machine.apply_transition(self.log[local_idx].transition.clone()).await;
-            state_machine.register_transition_state(
-                self.log[local_idx].transition.get_id(),
-                TransitionState::Applied,
-            );
+            state_machine
+                .apply_transition(self.log[local_idx].transition.clone())
+                .await;
+            state_machine
+                .register_transition_state(
+                    self.log[local_idx].transition.get_id(),
+                    TransitionState::Applied,
+                )
+                .await;
         }
 
         // If snapshot_delta is greater than 0, check whether it's time for log
@@ -477,10 +491,14 @@ where
             // configured delta, do compaction.
             if curr_delta >= self.snapshot_delta {
                 let last_applied = self.last_applied;
-                self.snapshot = Some(state_machine.create_snapshot(
-                    last_applied,
-                    self.log[last_applied - self.index_offset].term,
-                ));
+                self.snapshot = Some(
+                    state_machine
+                        .create_snapshot(
+                            last_applied,
+                            self.log[last_applied - self.index_offset].term,
+                        )
+                        .await,
+                );
                 self.log.retain(|l| l.index > last_applied);
                 self.index_offset = last_applied + 1;
             }
@@ -490,13 +508,8 @@ where
     async fn load_new_transitions(&mut self) {
         // Load new transitions. Ignore the transitions if the replica is not
         // the Leader.
-        let mut state_machine = self
-            .state_machine
-            .lock()
-            .await
-            ;
-        let transitions = state_machine.get_pending_transitions()
-            .await;
+        let mut state_machine = self.state_machine.lock().await;
+        let transitions = state_machine.get_pending_transitions().await;
         for transition in transitions {
             if self.state == State::Leader {
                 let e = LogEntry {
@@ -507,14 +520,17 @@ where
                 self.log.push(e.clone());
                 self.storage.lock().await.push_entry(e);
 
-                let mut state_machine = self.state_machine.lock().unwrap();
+                let mut state_machine = self.state_machine.lock().await;
                 state_machine
-                    .register_transition_state(transition.get_id(), TransitionState::Queued);
+                    .register_transition_state(transition.get_id(), TransitionState::Queued)
+                    .await;
             } else {
-                state_machine.register_transition_state(
-                    transition.get_id(),
-                    TransitionState::Abandoned(TransitionAbandonedReason::NotLeader),
-                );
+                state_machine
+                    .register_transition_state(
+                        transition.get_id(),
+                        TransitionState::Abandoned(TransitionAbandonedReason::NotLeader),
+                    )
+                    .await;
             }
         }
     }
@@ -567,8 +583,8 @@ where
             } => {
                 if term > self.current_term {
                     // Become follower if another node's term is higher.
-                    self.cluster.lock().unwrap().register_leader(None);
-                    self.become_follower(term);
+                    self.cluster.lock().await.register_leader(None);
+                    self.become_follower(term).await;
                 } else {
                     self.next_index.insert(from_id, last_included_index + 1);
                     self.match_index.insert(from_id, last_included_index);
@@ -612,7 +628,7 @@ where
             && self_last_log_term <= last_log_term
         {
             // If the criteria are met, grant the vote.
-            let mut cluster = self.cluster.await.unwrap();
+            let mut cluster = self.cluster.lock().await;
             cluster.register_leader(None);
             cluster.send_message(
                 from_id,
@@ -671,9 +687,9 @@ where
         // guaranteed to not be committed yet (otherwise we wouldn't be
         // receiving the snapshot in the first place), so it is correct to
         // restore StateMachine state from the snapshot.
-        let mut state_machine = self.state_machine.await.unwrap();
+        let mut state_machine = self.state_machine.lock().await;
         self.log.retain(|l| l.index > last_included_index);
-        state_machine.set_snapshot(snapshot.clone());
+        state_machine.set_snapshot(snapshot.clone()).await;
         self.snapshot = Some(snapshot);
         self.index_offset = last_included_index + 1;
         self.commit_index = last_included_index;
@@ -737,13 +753,18 @@ where
         for entry in entries {
             // Drop local inconsistent logs.
             if entry.index <= self.get_last_log_index()
-            && entry.term != self.get_term_at_index(entry.index).unwrap() {
+                && entry.term != self.get_term_at_index(entry.index).unwrap()
+            {
                 for i in entry.index - self.index_offset..self.log.len() {
-                    state_machine.register_transition_state(
-                        self.log[i].transition.get_id(),
-                        TransitionState::Abandoned(TransitionAbandonedReason::ConflictWithLeader)
-                    );
-                } 
+                    state_machine
+                        .register_transition_state(
+                            self.log[i].transition.get_id(),
+                            TransitionState::Abandoned(
+                                TransitionAbandonedReason::ConflictWithLeader,
+                            ),
+                        )
+                        .await;
+                }
                 self.log.truncate(entry.index);
                 st.truncate_entries(entry.index);
             }
@@ -761,7 +782,7 @@ where
             self.commit_index = cmp::min(commit_index, self.log[self.log.len() - 1].index);
         }
 
-        let mut cluster = self.cluster.await.unwrap();
+        let mut cluster = self.cluster.lock().await;
         cluster.register_leader(Some(from_id));
         cluster.send_message(
             from_id,
@@ -793,15 +814,17 @@ where
                 prev_log_term,
                 entries,
                 commit_index,
-            } => self.process_append_entry_request_as_follower(
-                from_id,
-                term,
-                prev_log_index,
-                prev_log_term,
-                entries,
-                commit_index,
-            )
-            .await,
+            } => {
+                self.process_append_entry_request_as_follower(
+                    from_id,
+                    term,
+                    prev_log_index,
+                    prev_log_term,
+                    entries,
+                    commit_index,
+                )
+                .await
+            }
             Message::InstallSnapshotRequest {
                 from_id,
                 term,
@@ -810,16 +833,18 @@ where
                 offset,
                 data,
                 done,
-            } => self.process_install_snapshot_request_as_follower(
-                from_id,
-                term,
-                last_included_index,
-                last_included_term,
-                offset,
-                data,
-                done,
-            )
-            .await,
+            } => {
+                self.process_install_snapshot_request_as_follower(
+                    from_id,
+                    term,
+                    last_included_index,
+                    last_included_term,
+                    offset,
+                    data,
+                    done,
+                )
+                .await
+            }
             _ => { /* ignore */ }
         }
     }
@@ -838,9 +863,13 @@ where
                 from_id,
                 term,
                 vote_granted,
-            } => self.process_vote_response_as_candidate(from_id, term, vote_granted).await,
+            } => {
+                self.process_vote_response_as_candidate(from_id, term, vote_granted)
+                    .await
+            }
             Message::InstallSnapshotRequest { from_id, term, .. } => {
-                self.process_install_snapshot_request_as_candidate(from_id, term, message).await
+                self.process_install_snapshot_request_as_candidate(from_id, term, message)
+                    .await
             }
             _ => { /* ignore */ }
         }
@@ -857,8 +886,8 @@ where
         // than the current term, inform the sender of your current term.
         if term >= self.current_term {
             self.cluster.lock().await.register_leader(None);
-            self.become_follower(term);
-            self.process_message(message);
+            self.become_follower(term).await;
+            self.process_message_as_follower(message).await;
         } else {
             self.cluster.lock().await.send_message(
                 from_id,
