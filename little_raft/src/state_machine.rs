@@ -51,7 +51,7 @@ pub trait StateMachineTransition: Clone + Debug {
 /// represent StateMachine state at a particular point. This will let the
 /// Replica start from a saved state or perform log compaction before the log
 /// sequence starts taking up too much memory.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize,)]
 pub struct Snapshot<D>
 where
     D: Clone,

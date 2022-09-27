@@ -7,7 +7,7 @@ use crate::{
     },
     timer::Timer,
 };
-use log::debug;
+use log::{debug, info};
 use log_derive::{logfn, logfn_inputs};
 use madsim::collections::{BTreeMap, BTreeSet};
 use madsim::rand::Rng;
@@ -258,7 +258,7 @@ where
         }
     }
 
-    #[logfn_inputs(Trace)]
+    #[logfn_inputs(Info)]
     async fn poll_as_leader(
         &mut self,
         recv_msg: &mut UnboundedReceiver<()>,
@@ -283,6 +283,7 @@ where
         };
     }
 
+    #[logfn_inputs(Info)]
     async fn broadcast_append_entry_request(&mut self) {
         self.broadcast_message(|peer_id: ReplicaID| {
             match self.get_term_at_index(self.next_index[&peer_id] - 1) {
@@ -362,6 +363,7 @@ where
     }
 
     async fn process_message(&mut self, message: Message<T, D>) {
+        info!("Process message {:?}", message);
         match self.state {
             State::Leader => self.process_message_as_leader(message).await,
             State::Candidate => self.process_message_as_candidate(message).await,
@@ -520,7 +522,6 @@ where
                 self.log.push(e.clone());
                 self.storage.lock().await.push_entry(e);
 
-                let mut state_machine = self.state_machine.lock().await;
                 state_machine
                     .register_transition_state(transition.get_id(), TransitionState::Queued)
                     .await;
@@ -749,30 +750,32 @@ where
             return;
         }
         let mut st = self.storage.lock().await;
-        let mut state_machine = self.state_machine.lock().await;
-        for entry in entries {
-            // Drop local inconsistent logs.
-            if entry.index <= self.get_last_log_index()
-                && entry.term != self.get_term_at_index(entry.index).unwrap()
-            {
-                for i in entry.index - self.index_offset..self.log.len() {
-                    state_machine
-                        .register_transition_state(
-                            self.log[i].transition.get_id(),
-                            TransitionState::Abandoned(
-                                TransitionAbandonedReason::ConflictWithLeader,
-                            ),
-                        )
-                        .await;
+        {
+            let mut state_machine = self.state_machine.lock().await;
+            for entry in entries {
+                // Drop local inconsistent logs.
+                if entry.index <= self.get_last_log_index()
+                    && entry.term != self.get_term_at_index(entry.index).unwrap()
+                {
+                    for i in entry.index - self.index_offset..self.log.len() {
+                        state_machine
+                            .register_transition_state(
+                                self.log[i].transition.get_id(),
+                                TransitionState::Abandoned(
+                                    TransitionAbandonedReason::ConflictWithLeader,
+                                ),
+                            )
+                            .await;
+                    }
+                    self.log.truncate(entry.index);
+                    st.truncate_entries(entry.index);
                 }
-                self.log.truncate(entry.index);
-                st.truncate_entries(entry.index);
-            }
-
-            // Push received logs.
-            if entry.index == self.log.len() + self.index_offset {
-                self.log.push(entry.clone());
-                st.push_entry(entry);
+            
+                // Push received logs.
+                if entry.index == self.log.len() + self.index_offset {
+                    self.log.push(entry.clone());
+                    st.push_entry(entry);
+                }
             }
         }
 
@@ -969,7 +972,7 @@ where
         }
     }
 
-    #[logfn_inputs(Trace)]
+    #[logfn_inputs(Info)]
     async fn become_leader(&mut self) {
         self.cluster.lock().await.register_leader(Some(self.id));
         self.state = State::Leader;
@@ -1009,7 +1012,7 @@ where
         self.voted_for = None;
         self.storage.lock().await.store_vote(None);
     }
-    #[logfn_inputs(Trace)]
+    #[logfn_inputs(Info)]
     async fn become_candidate(&mut self) {
         // Increase current term.
         self.current_term += 1;
