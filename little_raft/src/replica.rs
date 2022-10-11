@@ -181,8 +181,10 @@ where
         // index_offset is the "length" of the snapshot, so calculate it as
         // snapshot.last_included_index + 1.
         let mut index_offset: usize = 0;
+        let mut last_included = 0;
         if let Some(ref snapshot) = snapshot {
             index_offset = snapshot.last_included_index + 1;
+            last_included = snapshot.last_included_index;
         }
         let current_term = storage.clone().lock().await.get_term();
         let voted_for = storage.clone().lock().await.get_vote();
@@ -202,6 +204,7 @@ where
             storage.clone().lock().await.push_entry(v.clone());
             vec![v]
         };
+
         Replica {
             state_machine: state_machine,
             cluster: cluster,
@@ -213,8 +216,8 @@ where
             voted_for: voted_for,
             log: log,
             noop_transition: noop_transition.clone(),
-            commit_index: 0,
-            last_applied: 0,
+            commit_index: last_included,
+            last_applied: last_included,
             next_index: BTreeMap::new(),
             match_index: BTreeMap::new(),
             election_timeout: election_timeout_range,
