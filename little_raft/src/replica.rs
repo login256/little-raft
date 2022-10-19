@@ -691,9 +691,32 @@ where
         // guaranteed to not be committed yet (otherwise we wouldn't be
         // receiving the snapshot in the first place), so it is correct to
         // restore StateMachine state from the snapshot.
-        let mut state_machine = self.state_machine.lock().await;
-        self.log.retain(|l| l.index > last_included_index);
-        state_machine.set_snapshot(snapshot.clone()).await;
+        if snapshot.last_included_index >= self.log.len() + self.index_offset
+            || self
+                .get_term_at_index(snapshot.last_included_index)
+                .unwrap()
+                != snapshot.last_included_term
+        {
+            let mut st = self.storage.lock().await;
+            if snapshot.last_included_index >= self.log.len() + self.index_offset {
+                for i in self.log.len() + self.index_offset..snapshot.last_included_index + 1 {
+                    st.push_entry(LogEntry {
+                        transition: self.noop_transition.clone(),
+                        index: i,
+                        term: snapshot.last_included_term,
+                    });
+                }
+            } else {
+                st.truncate_entries(snapshot.last_included_index);
+            }
+            self.log.truncate(0);
+        } else {
+            self.log.retain(|l| l.index > last_included_index);
+        }
+        {
+            let mut state_machine = self.state_machine.lock().await;
+            state_machine.set_snapshot(snapshot.clone()).await;
+        }
         self.snapshot = Some(snapshot);
         self.index_offset = last_included_index + 1;
         self.commit_index = last_included_index;
@@ -770,10 +793,10 @@ where
                             )
                             .await;
                     }
-                    self.log.truncate(entry.index);
+                    self.log.truncate(entry.index - self.index_offset);
                     st.truncate_entries(entry.index);
                 }
-            
+
                 // Push received logs.
                 if entry.index == self.log.len() + self.index_offset {
                     self.log.push(entry.clone());
