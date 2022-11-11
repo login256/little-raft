@@ -9,8 +9,8 @@ use crate::{
 };
 use log::{debug, info};
 use log_derive::{logfn, logfn_inputs};
-use madsim::collections::{BTreeMap, BTreeSet};
 use madsim::rand::Rng;
+use std::collections::{BTreeMap, BTreeSet};
 use std::{
     cmp,
     time::{Duration, Instant},
